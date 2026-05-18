@@ -313,17 +313,106 @@ const TOP_THEMES = [
 function HomePage({ setPage, setSelectedHackathon, user }) {
   const { query, findMany } = useDB();
   const [search, setSearch] = useState("");
-  const [filterStatus, setFilterStatus] = useState("all");
   const [sortBy, setSortBy] = useState("relevant");
+  const [hackathons, setHackathons] = useState([]);
+  const [registrations, setRegistrations] = useState([]);
+  const [loading, setLoading] = useState(true);
+  
+  // Filter states
+  const [filterLocation, setFilterLocation] = useState({ online: false, inPerson: false });
+  const [filterStatus, setFilterStatus] = useState({ upcoming: false, open: false, endingSoon: false });
+  const [filterTags, setFilterTags] = useState({ aiml: false, web3: false, fintech: false, socialGood: false, openEnded: false });
 
-  const hackathons = query("hackathons");
-  const registrations = query("registrations");
+  // Fetch hackathons from API
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        const response = await fetch("http://localhost:5000/api/hackathons");
+        if (response.ok) {
+          const data = await response.json();
+          setHackathons(data);
+        }
+      } catch (err) {
+        console.log("API not available, using in-memory data");
+        setHackathons(query("hackathons"));
+      }
+      setLoading(false);
+    };
+    fetchData();
+  }, [query]);
 
+  // Fetch registrations if user exists
+  useEffect(() => {
+    if (user) {
+      const fetchRegs = async () => {
+        try {
+          const response = await fetch(`http://localhost:5000/api/registrations?userId=${user.id}`);
+          if (response.ok) {
+            const data = await response.json();
+            setRegistrations(data);
+          }
+        } catch (err) {
+          console.log("Registrations API not available");
+          setRegistrations(query("registrations"));
+        }
+      };
+      fetchRegs();
+    }
+  }, [user, query]);
+
+  // Apply filters and search
   const listed = hackathons.filter(h => {
-    const ms = !search || h.title.toLowerCase().includes(search.toLowerCase()) || h.organizer.toLowerCase().includes(search.toLowerCase()) || h.theme.toLowerCase().includes(search.toLowerCase());
-    const mf = filterStatus === "all" || h.status === filterStatus;
-    return ms && mf;
+    // Search filter
+    const matchSearch = !search || 
+      h.title.toLowerCase().includes(search.toLowerCase()) || 
+      h.organizer.toLowerCase().includes(search.toLowerCase()) || 
+      h.theme.toLowerCase().includes(search.toLowerCase());
+    
+    // Location filter (all hackathons are "online" for now, but structure for future)
+    const hasLocationFilter = filterLocation.online || filterLocation.inPerson;
+    const matchLocation = !hasLocationFilter || filterLocation.online;
+    
+    // Status filter - map Devpost statuses to backend statuses
+    const hasStatusFilter = filterStatus.upcoming || filterStatus.open || filterStatus.endingSoon;
+    let matchStatus = !hasStatusFilter;
+    if (hasStatusFilter) {
+      if (filterStatus.upcoming && h.status === "upcoming") matchStatus = true;
+      if (filterStatus.open && h.status === "open") matchStatus = true;
+      if (filterStatus.endingSoon && h.status === "closing") matchStatus = true;
+    }
+    
+    // Tags filter
+    const hasTagFilter = filterTags.aiml || filterTags.web3 || filterTags.fintech || filterTags.socialGood || filterTags.openEnded;
+    let matchTags = !hasTagFilter;
+    if (hasTagFilter) {
+      const tagMap = { aiml: ["AI","ML"], web3: ["Web3","Blockchain"], fintech: ["Fintech","Payments"], socialGood: ["Social Good"], openEnded: ["Open Ended"] };
+      for (const [key, tags] of Object.entries(tagMap)) {
+        if (filterTags[key] && h.tags.some(t => tags.some(tag => t.toLowerCase().includes(tag.toLowerCase())))) {
+          matchTags = true;
+          break;
+        }
+      }
+    }
+    
+    return matchSearch && matchLocation && matchStatus && matchTags;
   });
+
+  // Sort
+  let sorted = [...listed];
+  if (sortBy === "recent") {
+    sorted.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+  } else if (sortBy === "deadline") {
+    sorted.sort((a, b) => new Date(a.deadline || "2099-01-01") - new Date(b.deadline || "2099-01-01"));
+  } else if (sortBy === "prize") {
+    sorted.sort((a, b) => {
+      const getPrizeNum = (prizeStr) => {
+        if (!prizeStr) return 0;
+        const match = prizeStr.match(/(\d+)/);
+        return match ? parseInt(match[1]) * 1000 : 0;
+      };
+      return getPrizeNum(b.prize) - getPrizeNum(a.prize);
+    });
+  }
   
   const isRegistered = (id) => user && registrations.some(r => r.hackathonId === id && r.userId === user.id && r.status === "active");
 
@@ -351,13 +440,13 @@ function HomePage({ setPage, setSelectedHackathon, user }) {
           {/* Sort and results count */}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 16 }}>
             <span style={{ fontSize: 14, color: T.ink2, fontWeight: 600, fontFamily: F.body }}>
-              Showing <strong>{listed.length}</strong> hackathons
+              Showing <strong>{sorted.length}</strong> hackathons
             </span>
             <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
               <span style={{ fontSize: 12, color: T.ink3, fontWeight: 700, textTransform: "uppercase", fontFamily: F.mono, letterSpacing: "0.5px" }}>Sort:</span>
-              {["Most relevant", "Submission date", "Recently added", "Prize amount"].map((label, idx) => (
-                <button key={label} onClick={() => setSortBy(label)}
-                  style={{ padding: "6px 14px", borderRadius: 3, border: "none", background: sortBy === label ? T.emerald : "transparent", color: sortBy === label ? "#fff" : T.ink3, fontSize: 12, fontWeight: 600, cursor: "pointer", transition: "all 0.2s", fontFamily: F.body }}>
+              {[["relevant", "Most relevant"], ["deadline", "Submission date"], ["recent", "Recently added"], ["prize", "Prize amount"]].map(([key, label]) => (
+                <button key={key} onClick={() => setSortBy(key)}
+                  style={{ padding: "6px 14px", borderRadius: 3, border: "none", background: sortBy === key ? T.emerald : "transparent", color: sortBy === key ? "#fff" : T.ink3, fontSize: 12, fontWeight: 600, cursor: "pointer", transition: "all 0.2s", fontFamily: F.body }}>
                   {label}
                 </button>
               ))}
@@ -382,10 +471,10 @@ function HomePage({ setPage, setSelectedHackathon, user }) {
             {/* Location */}
             <div style={{ marginBottom: 28 }}>
               <h4 style={{ fontSize: 12, fontWeight: 700, color: T.ink3, margin: "0 0 12px", textTransform: "uppercase", letterSpacing: "1px", fontFamily: F.mono }}>Location</h4>
-              {["Online", "In-person"].map(loc => (
-                <label key={loc} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", marginBottom: 10 }}>
-                  <input type="checkbox" style={{ width: 16, height: 16, cursor: "pointer" }} />
-                  <span style={{ fontSize: 13, color: T.ink2, fontFamily: F.body }}>{loc}</span>
+              {[["online", "Online"], ["inPerson", "In-person"]].map(([key, label]) => (
+                <label key={key} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", marginBottom: 10 }}>
+                  <input type="checkbox" checked={filterLocation[key]} onChange={(e) => setFilterLocation({...filterLocation, [key]: e.target.checked})} style={{ width: 16, height: 16, cursor: "pointer" }} />
+                  <span style={{ fontSize: 13, color: T.ink2, fontFamily: F.body }}>{label}</span>
                 </label>
               ))}
             </div>
@@ -393,10 +482,10 @@ function HomePage({ setPage, setSelectedHackathon, user }) {
             {/* Status */}
             <div style={{ marginBottom: 28 }}>
               <h4 style={{ fontSize: 12, fontWeight: 700, color: T.ink3, margin: "0 0 12px", textTransform: "uppercase", letterSpacing: "1px", fontFamily: F.mono }}>Status</h4>
-              {["Upcoming", "Open", "Ending Soon"].map(status => (
-                <label key={status} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", marginBottom: 10 }}>
-                  <input type="checkbox" style={{ width: 16, height: 16, cursor: "pointer" }} />
-                  <span style={{ fontSize: 13, color: T.ink2, fontFamily: F.body }}>{status}</span>
+              {[["upcoming", "Upcoming"], ["open", "Open"], ["endingSoon", "Ending Soon"]].map(([key, label]) => (
+                <label key={key} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", marginBottom: 10 }}>
+                  <input type="checkbox" checked={filterStatus[key]} onChange={(e) => setFilterStatus({...filterStatus, [key]: e.target.checked})} style={{ width: 16, height: 16, cursor: "pointer" }} />
+                  <span style={{ fontSize: 13, color: T.ink2, fontFamily: F.body }}>{label}</span>
                 </label>
               ))}
             </div>
@@ -404,10 +493,10 @@ function HomePage({ setPage, setSelectedHackathon, user }) {
             {/* Interest tags */}
             <div>
               <h4 style={{ fontSize: 12, fontWeight: 700, color: T.ink3, margin: "0 0 12px", textTransform: "uppercase", letterSpacing: "1px", fontFamily: F.mono }}>Interest Tags</h4>
-              {["AI/ML", "Web3", "Fintech", "Social Good", "Open Ended"].map(tag => (
-                <label key={tag} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", marginBottom: 10 }}>
-                  <input type="checkbox" style={{ width: 16, height: 16, cursor: "pointer" }} />
-                  <span style={{ fontSize: 13, color: T.ink2, fontFamily: F.body }}>{tag}</span>
+              {[["aiml", "AI/ML"], ["web3", "Web3"], ["fintech", "Fintech"], ["socialGood", "Social Good"], ["openEnded", "Open Ended"]].map(([key, label]) => (
+                <label key={key} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", marginBottom: 10 }}>
+                  <input type="checkbox" checked={filterTags[key]} onChange={(e) => setFilterTags({...filterTags, [key]: e.target.checked})} style={{ width: 16, height: 16, cursor: "pointer" }} />
+                  <span style={{ fontSize: 13, color: T.ink2, fontFamily: F.body }}>{label}</span>
                 </label>
               ))}
             </div>
@@ -416,7 +505,7 @@ function HomePage({ setPage, setSelectedHackathon, user }) {
 
         {/* RIGHT - Hackathon listings */}
         <div>
-          {listed.length === 0 ? (
+          {sorted.length === 0 ? (
             <div style={{ textAlign: "center", padding: "80px 24px", background: T.cream, borderRadius: 8 }}>
               <div style={{ fontSize: 48, marginBottom: 14 }}>🔎</div>
               <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 8, fontFamily: F.display, color: T.ink }}>No hackathons found</div>
@@ -424,9 +513,9 @@ function HomePage({ setPage, setSelectedHackathon, user }) {
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-              {listed.map((h, idx) => {
+              {sorted.map((h, idx) => {
                 const dl = daysLeft(h.deadline);
-                const regCount = registrations.filter(r => r.hackathonId === h.id && r.status === "active").length;
+                const regCount = registrations.filter(r => r.hackathonId === h.id && r.status === "active").length || h.participants || 0;
                 const registered = isRegistered(h.id);
                 return (
                   <div key={h.id} onClick={() => { setSelectedHackathon(h); setPage("hackathon-detail"); }}
@@ -761,22 +850,73 @@ function AuthPage({ mode, setPage, setUser }) {
   const { query, insert } = useDB();
   const [form, setForm] = useState({ name:"", email:"", password:"", role:"participant" });
   const [err, setErr] = useState("");
+  const [loading, setLoading] = useState(false);
   const isLogin = mode === "login";
   const set = k => e => setForm(f => ({ ...f, [k]: e.target.value }));
 
-  const submit = () => {
+  const submit = async () => {
     setErr("");
-    if (isLogin) {
-      const found = query("users").find(u => u.email === form.email && u.password === form.password);
-      if (!found) { setErr("Invalid email or password."); return; }
-      setUser(found); setPage(found.role === "organizer" ? "org-dashboard" : "dashboard");
-    } else {
-      if (!form.name || !form.email || !form.password) { setErr("Fill all fields."); return; }
-      if (query("users").find(u => u.email === form.email)) { setErr("Email already registered."); return; }
-      const initials = form.name.split(" ").map(w => w[0]).join("").toUpperCase().slice(0,2) || "U";
-      const nu = { name:form.name, email:form.email, password:form.password, role:form.role, avatar:initials, bio:"", skills:[], location:"", github:"", linkedin:"", hackathonsJoined:[], wins:0 };
-      insert("users", nu);
-      setUser({ ...nu, id: Date.now() }); setPage(form.role === "organizer" ? "org-dashboard" : "dashboard");
+    setLoading(true);
+    
+    try {
+      if (isLogin) {
+        // Try API first
+        try {
+          const response = await fetch("http://localhost:5000/api/auth/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email: form.email, password: form.password })
+          });
+          if (response.ok) {
+            const data = await response.json();
+            setUser(data);
+            setPage(data.role === "organizer" ? "org-dashboard" : "dashboard");
+            return;
+          } else {
+            throw new Error("API login failed");
+          }
+        } catch (err) {
+          // Fallback to in-memory database
+          const found = query("users").find(u => u.email === form.email && u.password === form.password);
+          if (!found) { setErr("Invalid email or password."); setLoading(false); return; }
+          setUser(found); 
+          setPage(found.role === "organizer" ? "org-dashboard" : "dashboard");
+        }
+      } else {
+        // Register
+        if (!form.name || !form.email || !form.password) { setErr("Fill all fields."); setLoading(false); return; }
+        
+        // Try API first
+        try {
+          const response = await fetch("http://localhost:5000/api/auth/register", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: form.name, email: form.email, password: form.password, role: form.role })
+          });
+          if (response.ok) {
+            const data = await response.json();
+            setUser(data);
+            setPage(form.role === "organizer" ? "org-dashboard" : "dashboard");
+            return;
+          } else if (response.status === 409) {
+            setErr("Email already registered.");
+            setLoading(false);
+            return;
+          } else {
+            throw new Error("API register failed");
+          }
+        } catch (err) {
+          // Fallback to in-memory database
+          if (query("users").find(u => u.email === form.email)) { setErr("Email already registered."); setLoading(false); return; }
+          const initials = form.name.split(" ").map(w => w[0]).join("").toUpperCase().slice(0,2) || "U";
+          const nu = { name:form.name, email:form.email, password:form.password, role:form.role, avatar:initials, bio:"", skills:[], location:"", github:"", linkedin:"", hackathonsJoined:[], wins:0 };
+          insert("users", nu);
+          setUser({ ...nu, id: Date.now() }); 
+          setPage(form.role === "organizer" ? "org-dashboard" : "dashboard");
+        }
+      }
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -823,7 +963,7 @@ function AuthPage({ mode, setPage, setUser }) {
             </div>
           )}
 
-          <Btn full onClick={submit} style={{ padding:"13px", fontSize:14, fontWeight:800, marginBottom:18, background: T.orange, color: "#fff" }}>{isLogin ? "Sign in →" : "Create account →"}</Btn>
+          <Btn full onClick={submit} disabled={loading} style={{ padding:"13px", fontSize:14, fontWeight:800, marginBottom:18, background: T.orange, color: "#fff", opacity: loading ? 0.6 : 1 }}>{loading ? "Loading..." : (isLogin ? "Sign in →" : "Create account →")}</Btn>
           <div style={{ textAlign:"center", fontSize:13, color:T.ink3 }}>
             {isLogin ? "No account? " : "Have an account? "}
             <span onClick={() => setPage(isLogin ? "register" : "login")} style={{ color:T.teal2, fontWeight:700, cursor:"pointer" }}>{isLogin ? "Sign up free" : "Sign in"}</span>
@@ -1662,16 +1802,38 @@ function AppInner() {
   const [user, setUser] = useState(null);
   const [selH, setSelH] = useState(null);
 
+  // Load user from localStorage on mount
+  useEffect(() => {
+    const savedUser = localStorage.getItem("hackerverse_user");
+    if (savedUser) {
+      try {
+        setUser(JSON.parse(savedUser));
+      } catch (e) {
+        console.log("Failed to load user from localStorage");
+      }
+    }
+  }, []);
+
+  // Save user to localStorage when it changes
+  const handleSetUser = (newUser) => {
+    setUser(newUser);
+    if (newUser) {
+      localStorage.setItem("hackerverse_user", JSON.stringify(newUser));
+    } else {
+      localStorage.removeItem("hackerverse_user");
+    }
+  };
+
   const noFooter = ["dashboard","org-dashboard"].includes(page);
 
   const renderPage = () => {
     switch (page) {
       case "home": return <HomePage setPage={setPage} setSelectedHackathon={setSelH} user={user} />;
       case "hackathon-detail": return selH ? <HackathonDetailPage hackathon={selH} setPage={setPage} user={user} setSelectedHackathon={setSelH} /> : <HomePage setPage={setPage} setSelectedHackathon={setSelH} user={user} />;
-      case "login": return <AuthPage mode="login" setPage={setPage} setUser={setUser} />;
-      case "register": return <AuthPage mode="register" setPage={setPage} setUser={setUser} />;
-      case "dashboard": return user ? <ParticipantDashboard user={user} setUser={setUser} setPage={setPage} setSelectedHackathon={setSelH} /> : <AuthPage mode="login" setPage={setPage} setUser={setUser} />;
-      case "org-dashboard": return user ? <OrgDashboard user={user} setPage={setPage} setSelectedHackathon={setSelH} /> : <AuthPage mode="login" setPage={setPage} setUser={setUser} />;
+      case "login": return <AuthPage mode="login" setPage={setPage} setUser={handleSetUser} />;
+      case "register": return <AuthPage mode="register" setPage={setPage} setUser={handleSetUser} />;
+      case "dashboard": return user ? <ParticipantDashboard user={user} setUser={handleSetUser} setPage={setPage} setSelectedHackathon={setSelH} /> : <AuthPage mode="login" setPage={setPage} setUser={handleSetUser} />;
+      case "org-dashboard": return user ? <OrgDashboard user={user} setPage={setPage} setSelectedHackathon={setSelH} /> : <AuthPage mode="login" setPage={setPage} setUser={handleSetUser} />;
       case "host": return <HostPage setPage={setPage} user={user} />;
       default: return <HomePage setPage={setPage} setSelectedHackathon={setSelH} user={user} />;
     }
@@ -1679,7 +1841,7 @@ function AppInner() {
 
   return (
     <div style={{ fontFamily: F.body, color: T.ink, background: T.cream, minHeight: "100vh", display: "flex", flexDirection: "column" }}>
-      <Navbar page={page} setPage={setPage} user={user} setUser={setUser} />
+      <Navbar page={page} setPage={setPage} user={user} setUser={handleSetUser} />
       <div style={{ flex: 1 }}>{renderPage()}</div>
       {!noFooter && <Footer setPage={setPage} />}
     </div>
